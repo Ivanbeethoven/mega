@@ -11,7 +11,8 @@ use self::storage::MysqlStorage;
 
 pub async fn init() -> MysqlStorage {
     id_generator::set_up_options().unwrap();
-    let db_url = env::var("MEGA_DATABASE_URL").expect("DATABASE_URL is not set in .env file");
+    let db_url = String::from("mysql://root:123456@172.19.64.1:3306/mega");
+    //env::var("MEGA_DATABASE_URL").expect("DATABASE_URL is not set in .env file");
     let mut opt = ConnectOptions::new(db_url.to_owned());
     // max_connections is properly for double size of the cpu core
     opt.max_connections(32)

@@ -3,9 +3,9 @@
 //!
 //!
 //!
-use super::object::cache::ObjectCache;
+use super::object::{cache::ObjectCache, ObjectT};
 use crate::hash::Hash;
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 pub mod decode;
 pub mod delta;
 pub mod encode;
@@ -27,7 +27,7 @@ pub struct Pack {
     number_of_objects: usize,
     pub signature: Hash,
     path: PathBuf,
-    cache: ObjectCache,
+    cache: ObjectCache<Arc<dyn ObjectT>>,
     //iterator: Option<iterator::EntriesIter<BR>>,
 }
 
@@ -39,7 +39,7 @@ impl Pack {
     pub fn number_of_objects(&self) -> usize {
         self.number_of_objects
     }
-    pub fn get_cache(self) -> ObjectCache {
+    pub fn get_cache(self) -> ObjectCache<Arc<dyn ObjectT>> {
         self.cache
     }
 }

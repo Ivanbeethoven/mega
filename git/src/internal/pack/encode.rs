@@ -76,7 +76,7 @@ fn u32_vec(value: u32) -> Vec<u8> {
         (value >> 24 & 0xff) as u8,
         (value >> 16 & 0xff) as u8,
         (value >> 8 & 0xff) as u8,
-        (value & 0xff) as u8     
+        (value & 0xff) as u8,
     ]
 }
 
