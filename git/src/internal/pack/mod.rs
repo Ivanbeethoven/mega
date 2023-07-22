@@ -10,7 +10,7 @@ pub mod decode;
 pub mod delta;
 pub mod encode;
 pub mod iterator;
-mod encode;
+
 mod preload;
 /// ### Represents a Git pack file.
 ///  `head`: The file header, typically "PACK"<br>
