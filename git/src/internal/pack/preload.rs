@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use std::{
     collections::HashMap,
     io::{Cursor, Read},
-    sync::{mpsc, Arc,Mutex},
+    sync::{mpsc, Arc,Mutex}, time::{self, Instant},
 };
 
 /// 
@@ -56,7 +56,8 @@ impl PackPreload {
     pub fn new<R>(mut r: R) -> PackPreload
     where
         R: std::io::BufRead,
-    {
+    {   
+        let start = Instant::now();
         let mut offset: usize = 12;
         let mut counter = GitTypeCounter::default();
         let pack = Pack::check_header(&mut r).unwrap();
@@ -114,6 +115,8 @@ impl PackPreload {
             map.insert(offset, i);
             offset += iter_offset;
         }
+        let end = start.elapsed().as_millis();
+        tracing::info!("Preload time cost:{} ms", end);
         PackPreload { map, entries ,counter }
     }
 
@@ -127,7 +130,7 @@ impl PackPreload {
 
 
 #[allow(unused)]
-pub async fn decode_load(p: PackPreload, storage: Arc<dyn ObjectStorage>) {
+pub async fn decode_load(p: PackPreload, storage: Arc<dyn ObjectStorage>) -> Result<i64,GitError> {
     let decode_counter: Arc<Mutex<DecodeCounter>> = Arc::new(Mutex::new(DecodeCounter::default())) ;
 
     let all_len = p.len();
@@ -159,10 +162,10 @@ pub async fn decode_load(p: PackPreload, storage: Arc<dyn ObjectStorage>) {
             } )
         })
         .collect();
-
+        let mr_id = generate_id();
     // 启动消费者任务
     let consume_handle = tokio::spawn(async move  {
-        consume_object(rx, storage.clone()).await;
+        consume_object(rx, storage.clone(),mr_id).await;
     });
 
     // 等待所有生产者任务结束
@@ -178,6 +181,7 @@ pub async fn decode_load(p: PackPreload, storage: Arc<dyn ObjectStorage>) {
     let re = decode_counter.lock().unwrap();
     tracing::info!("Summary : {}",re);
           println!("Summary : {}",re);
+    Ok(mr_id)
 }
 
 use std::sync::mpsc::Receiver;
@@ -192,7 +196,7 @@ async fn produce_object(
     counter: Arc<Mutex<DecodeCounter>>,
 ) {
     let mut cache: ObjectCache<Entry> = ObjectCache::new(Some(100));
-
+    let start = Instant::now();
     
     for i in range_begin..range_end {
         let read_auth = data.read().await;
@@ -250,12 +254,15 @@ async fn produce_object(
 
         // TYPE HASH DATA  // DELTA
     }
+    let end = start.elapsed().as_millis();
+    tracing::info!("Git Object Produce thread one  time cost:{} ms", end);
+
 }
 
-async fn consume_object(rx: Receiver<Entry>, storage: Arc<dyn ObjectStorage>) {
+async fn consume_object(rx: Receiver<Entry>, storage: Arc<dyn ObjectStorage>,mr_id:i64) {
     let mut save_model = Vec::<git::ActiveModel>::with_capacity(101);
-    
-    let mr_id = generate_id();
+    let start = Instant::now();
+    //let mr_id = generate_id();
    
     for data in rx.into_iter() {
         save_model.push(data.convert_to_mr_model(mr_id));
@@ -267,6 +274,8 @@ async fn consume_object(rx: Receiver<Entry>, storage: Arc<dyn ObjectStorage>) {
     if !save_model.is_empty() {
         storage.save_git_objects(save_model).await.unwrap();
     }
+    let end = start.elapsed().as_millis();
+    tracing::info!("Git Object Consume thread time cost:{} ms", end);
 }
 #[async_recursion]//TODO del recursion
 async fn delta_offset_obj(

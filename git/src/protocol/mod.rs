@@ -14,7 +14,7 @@ use database::{
     utils::id_generator::generate_id,
 };
 
-use crate::{errors::GitError, internal::pack::decode::HashCounter, protocol::pack::SP};
+use crate::{errors::GitError, internal::pack::{decode::HashCounter, preload::{PackPreload, decode_load}}, protocol::pack::SP};
 
 use bytes::Bytes;
 use entity::{git, refs};
@@ -178,38 +178,39 @@ impl RefCommand {
         let result: Result<i64, GitError> = {
             let count_hash: bool = true;
             let curosr_pack = Cursor::new(pack_file);
-            let mut reader = HashCounter::new(curosr_pack, count_hash);
-            // Read the header of the pack file
-            let mut pack = Pack::check_header(&mut reader)?;
+            let reader = HashCounter::new(curosr_pack, count_hash);
+            // // Read the header of the pack file
+            // let mut pack = Pack::check_header(&mut reader)?;
 
-            let mut iterator = EntriesIter::new(&mut reader, pack.number_of_objects() as u32);
-            iterator.set_storage(Some(storage.clone()));
-            let mut save_models: Vec<git::ActiveModel> = Vec::new();
-            let mr_id = generate_id();
-            let batch_size = 100;
-            for i in 0..pack.number_of_objects() {
-                let obj = iterator.next_obj().await?;
-                // println!("{}", obj);
-                if i % 1000 == 0 {
-                    tracing::info!("{}", i)
-                }
-                save_models.push(obj.convert_to_mr_model(mr_id));
-                if save_models.len() == batch_size {
-                    storage.save_git_objects(save_models.clone()).await.unwrap();
-                    save_models.clear();
-                }
-            }
-            if !save_models.is_empty() {
-                storage.save_git_objects(save_models).await.unwrap();
-            }
-            drop(iterator);
-            let _hash = reader.final_hash();
-            pack.signature = _hash;
-            //pack.signature = Hash::new_from_bytes(&id[..]);
+            // let mut iterator = EntriesIter::new(&mut reader, pack.number_of_objects() as u32);
+            // iterator.set_storage(Some(storage.clone()));
+            // let mut save_models: Vec<git::ActiveModel> = Vec::new();
+            // let mr_id = generate_id();
+            // let batch_size = 100;
+            // for i in 0..pack.number_of_objects() {
+            //     let obj = iterator.next_obj().await?;
+            //     // println!("{}", obj);
+            //     if i % 1000 == 0 {
+            //         tracing::info!("{}", i)
+            //     }
+            //     save_models.push(obj.convert_to_mr_model(mr_id));
+            //     if save_models.len() == batch_size {
+            //         storage.save_git_objects(save_models.clone()).await.unwrap();
+            //         save_models.clear();
+            //     }
+            // }
+            // if !save_models.is_empty() {
+            //     storage.save_git_objects(save_models).await.unwrap();
+            // }
+            // drop(iterator);
+            // let _hash = reader.final_hash();
+            // pack.signature = _hash;
+            // //pack.signature = Hash::new_from_bytes(&id[..]);
 
-            // pack.signature = read_tail_hash(&mut reader);
-            // assert_eq!(_hash, pack.signature);
-
+            // // pack.signature = read_tail_hash(&mut reader);
+            // // assert_eq!(_hash, pack.signature);
+            let p = PackPreload::new(reader);
+            let mr_id = decode_load(p, storage).await?;
             Ok(mr_id)
         };
         match result {
