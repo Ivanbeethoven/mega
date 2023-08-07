@@ -64,7 +64,11 @@ impl PackPreload {
         let mut map = HashMap::new();
         let obj_number = pack.number_of_objects();
         let mut entries = Vec::with_capacity(obj_number);
+        tracing::info!("Start Preload git objects:{} ", obj_number);
         for i in 0..obj_number {
+            if i%10000==0{
+                tracing::info!(" Preloading  git objects:{} ", i);    
+            }
             let mut iter_offset: usize = 0;
             // Read the Object Type and Total Size of one Object
             let (type_num, size) = utils::read_type_and_size(&mut r).unwrap();
@@ -143,7 +147,7 @@ pub async fn decode_load(p: PackPreload, storage: Arc<dyn ObjectStorage>) -> Res
     let share: Arc<RwLock<PackPreload>> = Arc::new(RwLock::new(p));
     // 创建一个多生产者，单消费者的通道
     let (tx, rx) = mpsc::channel();
-
+    let mr_id = generate_id();
     let producer_handles: Vec<_> = (0..cpu_number)
         .map(|i| {
             let tx_clone = tx.clone();
@@ -158,15 +162,15 @@ pub async fn decode_load(p: PackPreload, storage: Arc<dyn ObjectStorage>) -> Res
                 (i + 1) * chunk
             };
             tokio::spawn(async move{
-                produce_object(shard_clone, tx_clone, st_clone, begin, end,counter_clone).await;
+                produce_object(shard_clone, tx_clone, st_clone, begin, end,counter_clone,mr_id).await;
             } )
         })
         .collect();
-        let mr_id = generate_id();
-    // 启动消费者任务
-    let consume_handle = tokio::spawn(async move  {
-        consume_object(rx, storage.clone(),mr_id).await;
-    });
+       
+    // // 启动消费者任务
+    // let consume_handle = tokio::spawn(async move  {
+    //     consume_object(rx, storage.clone(),mr_id).await;
+    // });
 
     // 等待所有生产者任务结束
     for handle in producer_handles {
@@ -174,10 +178,11 @@ pub async fn decode_load(p: PackPreload, storage: Arc<dyn ObjectStorage>) -> Res
     }
 
     // 关闭通道以结束消费者任务
-    drop(tx);
+    //drop(tx);
 
     // 等待消费者任务结束
-    consume_handle.await;
+    //consume_handle.await;
+
     let re = decode_counter.lock().unwrap();
     tracing::info!("Summary : {}",re);
           println!("Summary : {}",re);
@@ -194,8 +199,10 @@ async fn produce_object(
     range_begin: usize,
     range_end: usize,
     counter: Arc<Mutex<DecodeCounter>>,
+    mr_id: i64,
 ) {
-    let mut cache: ObjectCache<Entry> = ObjectCache::new(Some(100));
+    let mut save_model = Vec::<git::ActiveModel>::with_capacity(101);
+    let mut cache: ObjectCache<Entry> = ObjectCache::new(Some(1000));
     let start = Instant::now();
     
     for i in range_begin..range_end {
@@ -250,9 +257,16 @@ async fn produce_object(
             } 
         }
         cache.put(e.offset, result_entity.hash.unwrap(), result_entity.clone());
-        send.send(result_entity).unwrap();
-
+        //send.send(result_entity).unwrap();
+        save_model.push(result_entity.convert_to_mr_model(mr_id));
+        if save_model.len() >= 100 {
+            storage.save_git_objects(save_model).await.unwrap();
+            save_model = Vec::with_capacity(101);
+        }
         // TYPE HASH DATA  // DELTA
+    }
+    if !save_model.is_empty() {
+        storage.save_git_objects(save_model).await.unwrap();
     }
     let end = start.elapsed().as_millis();
     tracing::info!("Git Object Produce thread one  time cost:{} ms", end);
@@ -381,11 +395,16 @@ mod tests {
     async fn test_demo_channel() {
         std::env::set_var("MEGA_DATABASE_URL", "mysql://root:123456@localhost:3306/mega");
         let file = File::open(Path::new(
-            "../tests/data/packs/pack-d50df695086eea6253a237cb5ac44af1629e7ced.pack",
+            "/home/99211/linux/.git/objects/pack/pack-a3f96bcba83583d37b77a528b82bd1d97ffac70c.pack",
         ))
         .unwrap();
-        let storage = Arc::new(mysql::init().await);
+        //let storage = Arc::new(mysql::init().await);
         let p = PackPreload::new(BufReader::new(file));
-        decode_load(p, storage).await;
+        let mut total = 0;
+        for it in p.entries{
+            total += it.data.len();
+        }
+        println!("{}",total);
+        //decode_load(p, storage).await;
     }
 }
