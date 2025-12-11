@@ -105,7 +105,7 @@ impl Filesystem for Dicfuse {
         _flags: u32,
         _position: u32,
     ) -> Result<()> {
-        eprintln!("[{}:{}] setxattr not implemented", file!(), line!());
+        println!("[{}:{}] setxattr not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
@@ -123,27 +123,27 @@ impl Filesystem for Dicfuse {
     }
 
     async fn listxattr(&self, _req: Request, _inode: Inode, _size: u32) -> Result<ReplyXAttr> {
-        eprintln!("[{}:{}] listxattr not implemented", file!(), line!());
+        println!("[{}:{}] listxattr not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
     async fn removexattr(&self, _req: Request, _inode: Inode, _name: &OsStr) -> Result<()> {
-        eprintln!("[{}:{}] removexattr not implemented", file!(), line!());
+        println!("[{}:{}] removexattr not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
     async fn flush(&self, _req: Request, _inode: Inode, _fh: u64, _lock_owner: u64) -> Result<()> {
-        eprintln!("[{}:{}] flush not implemented", file!(), line!());
+        println!("[{}:{}] flush not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
     async fn unlink(&self, _req: Request, _parent: Inode, _name: &OsStr) -> Result<()> {
-        eprintln!("[{}:{}] unlink not implemented", file!(), line!());
+        println!("[{}:{}] unlink not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
     async fn rmdir(&self, _req: Request, _parent: Inode, _name: &OsStr) -> Result<()> {
-        eprintln!("[{}:{}] rmdir not implemented", file!(), line!());
+        println!("[{}:{}] rmdir not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
@@ -155,7 +155,7 @@ impl Filesystem for Dicfuse {
         _new_parent: Inode,
         _new_name: &OsStr,
     ) -> Result<()> {
-        eprintln!("[{}:{}] rename not implemented", file!(), line!());
+        println!("[{}:{}] rename not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
@@ -167,7 +167,7 @@ impl Filesystem for Dicfuse {
         _mode: u32,
         _umask: u32,
     ) -> Result<ReplyEntry> {
-        eprintln!("[{}:{}] mkdir not implemented", file!(), line!());
+        println!("[{}:{}] mkdir not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
@@ -178,7 +178,7 @@ impl Filesystem for Dicfuse {
         _new_parent: Inode,
         _new_name: &OsStr,
     ) -> Result<ReplyEntry> {
-        eprintln!("[{}:{}] link not implemented", file!(), line!());
+        println!("[{}:{}] link not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
     /// open a directory. Filesystem may store an arbitrary file handle (pointer, index, etc) in
@@ -436,12 +436,12 @@ impl Filesystem for Dicfuse {
         _mode: u32,
         _flags: u32,
     ) -> Result<ReplyCreated> {
-        eprintln!("[{}:{}] create not implemented", file!(), line!());
+        println!("[{}:{}] create not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
     async fn interrupt(&self, _req: Request, _unique: u64) -> Result<()> {
-        eprintln!("[{}:{}] interrupt not implemented", file!(), line!());
+        println!("[{}:{}] interrupt not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
@@ -452,7 +452,7 @@ impl Filesystem for Dicfuse {
         _blocksize: u32,
         _idx: u64,
     ) -> Result<ReplyBmap> {
-        eprintln!("[{}:{}] bmap not implemented", file!(), line!());
+        println!("[{}:{}] bmap not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
@@ -466,7 +466,7 @@ impl Filesystem for Dicfuse {
         _events: u32,
         _notify: &Notify,
     ) -> Result<ReplyPoll> {
-        eprintln!("[{}:{}] poll not implemented", file!(), line!());
+        println!("[{}:{}] poll not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
@@ -477,7 +477,7 @@ impl Filesystem for Dicfuse {
         _offset: u64,
         _data: Bytes,
     ) -> Result<()> {
-        eprintln!("[{}:{}] notify_reply not implemented", file!(), line!());
+        println!("[{}:{}] notify_reply not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
@@ -500,7 +500,7 @@ impl Filesystem for Dicfuse {
         _length: u64,
         _mode: u32,
     ) -> Result<()> {
-        eprintln!("[{}:{}] fallocate not implemented", file!(), line!());
+        println!("[{}:{}] fallocate not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
@@ -513,7 +513,7 @@ impl Filesystem for Dicfuse {
         _new_name: &OsStr,
         _flags: u32,
     ) -> Result<()> {
-        eprintln!("[{}:{}] rename2 not implemented", file!(), line!());
+        println!("[{}:{}] rename2 not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
@@ -525,7 +525,7 @@ impl Filesystem for Dicfuse {
         _offset: u64,
         _whence: u32,
     ) -> Result<ReplyLSeek> {
-        eprintln!("[{}:{}] lseek not implemented", file!(), line!());
+        println!("[{}:{}] lseek not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 
@@ -541,7 +541,7 @@ impl Filesystem for Dicfuse {
         _length: u64,
         _flags: u64,
     ) -> Result<ReplyCopyFileRange> {
-        eprintln!("[{}:{}] copy_file_range not implemented", file!(), line!());
+        println!("[{}:{}] copy_file_range not implemented", file!(), line!());
         Err(libc::ENOSYS.into())
     }
 }

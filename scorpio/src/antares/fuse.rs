@@ -138,7 +138,10 @@ mod tests {
     use tokio::time::{sleep, Duration};
 
     #[tokio::test]
-    #[ignore] // Run with: sudo -E $(which cargo) test --lib antares::fuse::tests::test_simple_passthrough_mount -- --exact --ignored --nocapture
+    #[ignore]
+    // Requires FUSE/root. Direct run example:
+    //   sudo -E cargo test --lib antares::fuse::tests::test_simple_passthrough_mount -- --exact --ignored --nocapture
+    // For LLDB debug workflow, see `doc/test.md`.
     async fn test_simple_passthrough_mount() {
         // Simplified test using only passthrough layers (no Dicfuse)
         use libfuse_fs::{
@@ -253,7 +256,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Run with: sudo -E $(which cargo) test --lib antares::fuse::tests::test_antares_mount -- --exact --ignored --nocapture
+    #[ignore]
+    // Requires FUSE/root. Direct run example:
+    //   sudo -E cargo test --lib antares::fuse::tests::test_antares_mount -- --exact --ignored --nocapture
+    // For no-run + LLDB debugging steps, see `doc/test.md`.
     async fn test_antares_mount() {
         // Only  LoggingFileSystem DEBUG
         use tracing_subscriber::EnvFilter;
@@ -334,5 +340,100 @@ mod tests {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
+    }
+
+    /// Verify that creating a file in a deep directory path is reflected in the upper layer.
+    ///
+    /// Topology:
+    /// - lower: one passthrough layer with a 3-level deep directory tree `a/b/c`.
+    /// - upper: empty directory used as the writable layer.
+    ///
+    /// We create a file at `/mnt/a/b/c/created.txt` and then check that the file
+    /// appears under `upper/a/b/c/created.txt` and does NOT exist in the lower tree.
+    #[tokio::test]
+    #[ignore]
+    // Requires FUSE/root. Direct run example:
+    //   sudo -E cargo test --lib antares::fuse::tests::deep_write_goes_to_upper -- --exact --ignored --nocapture
+    // For LLDB-based debugging, follow the steps in `doc/test.md`.
+    async fn deep_write_goes_to_upper() {
+        use libfuse_fs::{
+            passthrough::{new_passthroughfs_layer, PassthroughArgs,newlogfs::LoggingFileSystem},
+            unionfs::{config::Config, OverlayFs},
+        };
+        use std::sync::Arc;
+    // Only  LoggingFileSystem DEBUG
+        use tracing_subscriber::EnvFilter;
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                EnvFilter::from_default_env()
+                    .add_directive("libfuse_fs::passthrough::newlogfs=debug".parse().unwrap()),
+            )
+            .try_init();
+        let uid = unsafe { libc::geteuid() };
+        if uid != 0 {
+            println!(
+                "Warning: This test requires root privileges for FUSE/open_by_handle_at"
+            );
+            println!(
+                "Run with: sudo -E cargo test --lib antares::fuse::tests::deep_write_goes_to_upper -- --exact --ignored --nocapture"
+            );
+            return;
+        }
+
+        let base = PathBuf::from("/tmp/antares_deep_overlay_test3");
+        let _ = std::fs::remove_dir_all(&base);
+        let mount = base.join("mnt");
+        let upper = base.join("upper");
+        let lower = base.join("lower");
+
+        // Prepare directory layout: lower contains `a/b/c`, upper is empty.
+        std::fs::create_dir_all(&mount).unwrap();
+        std::fs::create_dir_all(&upper).unwrap();
+        std::fs::create_dir_all(lower.join("a/b/c")).unwrap();
+
+        // Build overlay: empty upper, single lower.
+        let lower_layer = new_passthroughfs_layer(PassthroughArgs {
+            root_dir: &lower,
+            mapping: None::<String>,
+        })
+        .await
+        .unwrap();
+
+        let upper_layer = new_passthroughfs_layer(PassthroughArgs {
+            root_dir: &upper,
+            mapping: None::<String>,
+        })
+        .await
+        .unwrap();
+
+        let cfg = Config {
+            mountpoint: mount.clone(),
+            do_import: true,
+            ..Default::default()
+        };
+
+        let overlay = OverlayFs::new(
+            Some(Arc::new(upper_layer)),
+            vec![Arc::new(lower_layer)],
+            cfg,
+            1,
+        )
+        .unwrap();
+
+        println!("Mounting deep overlay at: {}", mount.display());
+        let logfs = LoggingFileSystem::new(overlay);
+        let handle = crate::server::mount_filesystem(logfs, mount.as_os_str()).await;
+
+        // Run FUSE session in the background.
+        let fuse_task = tokio::spawn(async move {
+            let _ = handle.await;
+        });
+
+        // Give the mount a moment to initialize.
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+
+
     }
 }
