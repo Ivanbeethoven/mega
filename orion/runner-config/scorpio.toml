@@ -7,8 +7,8 @@
 # ==============================================================================
 
 # Mega 服务地址
-base_url = "https://git.buck2hub.com"
-lfs_url = "https://git.buck2hub.com"
+base_url = "https://git.gitmega.com"
+lfs_url = "https://git.gitmega.com"
 
 # Dicfuse 数据存储
 store_path = "/data/scorpio/store"

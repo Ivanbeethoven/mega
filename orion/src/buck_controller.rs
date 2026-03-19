@@ -4,7 +4,6 @@ use std::{
     io::BufReader,
     path::{Path, PathBuf},
     process::{ExitStatus, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
 };
 
 use anyhow::anyhow;
@@ -38,6 +37,9 @@ use crate::repo::diff;
 
 const MAX_BATCH_SIZE: usize = 100;
 const FLUSH_INTERVAL_MS: u64 = 100;
+const PROJECT_ROOT_PROBE_ATTEMPTS: usize = 10;
+const PROJECT_ROOT_PROBE_INTERVAL_MS: u64 = 500;
+const CELLS_CONFIG_ATTEMPTS: usize = 2;
 
 #[allow(dead_code)]
 static PROJECT_ROOT: Lazy<String> =
@@ -45,14 +47,6 @@ static PROJECT_ROOT: Lazy<String> =
 
 const DEFAULT_PREHEAT_SHALLOW_DEPTH: usize = 3;
 static BUILD_CONFIG: Lazy<Option<BuildConfig>> = Lazy::new(load_build_config);
-
-/// Check whether failed-build mounts should be kept alive for debugging.
-/// Controlled by the `ORION_KEEP_FAILED_MOUNTS` environment variable (set to "1" to enable).
-fn keep_failed_mounts() -> bool {
-    std::env::var("ORION_KEEP_FAILED_MOUNTS")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-}
 
 /// Mount an Antares overlay filesystem for a build job.
 ///
@@ -86,6 +80,9 @@ pub async fn mount_antares_fs(
         mountpoint,
         mount_id
     );
+
+    // Give FUSE a short stabilization window to avoid immediate post-mount races.
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     Ok((mountpoint, mount_id))
 }
@@ -248,6 +245,47 @@ fn resolve_config_path() -> Option<PathBuf> {
     None
 }
 
+fn is_transient_mount_error(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_ascii_lowercase();
+    msg.contains("no such file or directory")
+        || msg.contains("transport endpoint is not connected")
+        || msg.contains("input/output error")
+}
+
+async fn wait_for_project_root_ready(task_id: &str, role: &str, path: &Path) -> anyhow::Result<()> {
+    for attempt in 1..=PROJECT_ROOT_PROBE_ATTEMPTS {
+        let exists = path.exists();
+        let can_read = if exists {
+            std::fs::read_dir(path).is_ok()
+        } else {
+            false
+        };
+
+        if exists && can_read {
+            tracing::debug!(
+                "[Task {}] Project root ready ({}) at {} on attempt {}/{}",
+                task_id,
+                role,
+                path.display(),
+                attempt,
+                PROJECT_ROOT_PROBE_ATTEMPTS
+            );
+            return Ok(());
+        }
+
+        if attempt < PROJECT_ROOT_PROBE_ATTEMPTS {
+            tokio::time::sleep(Duration::from_millis(PROJECT_ROOT_PROBE_INTERVAL_MS)).await;
+        }
+    }
+
+    Err(anyhow!(
+        "Project root not ready after {} attempts ({}): {}",
+        PROJECT_ROOT_PROBE_ATTEMPTS,
+        role,
+        path.display()
+    ))
+}
+
 /// Get target of a specific repo under tmp directory.
 ///
 /// Note: `preheat()` was previously called here to warm the kernel VFS/FUSE
@@ -311,18 +349,78 @@ async fn get_build_targets(
 
     preheat_shallow(&mount_path, preheat_shallow_depth())?;
     let mut buck2 = Buck2::with_root("buck2".to_string(), mount_path.clone());
-    let mut cells = CellInfo::parse(
-        &buck2
-            .cells()
-            .map_err(|err| anyhow!("Fail to get cells: {}", err))?,
-    )?;
 
-    tracing::debug!("Get config");
-    cells.parse_config_data(
-        &buck2
-            .audit_config()
-            .map_err(|err| anyhow!("Fail to get config: {}", err))?,
-    )?;
+    let mut last_err: Option<anyhow::Error> = None;
+    let mut cells: Option<CellInfo> = None;
+    for attempt in 1..=CELLS_CONFIG_ATTEMPTS {
+        let cells_output = match buck2.cells() {
+            Ok(output) => output,
+            Err(err) => {
+                let wrapped = anyhow!(
+                    "Fail to get cells at {} (attempt {}/{}): {}",
+                    mount_path.display(),
+                    attempt,
+                    CELLS_CONFIG_ATTEMPTS,
+                    err
+                );
+                if attempt < CELLS_CONFIG_ATTEMPTS && is_transient_mount_error(&wrapped) {
+                    tracing::warn!("{}; retrying", wrapped);
+                    tokio::time::sleep(Duration::from_millis(PROJECT_ROOT_PROBE_INTERVAL_MS)).await;
+                    last_err = Some(wrapped);
+                    continue;
+                }
+                return Err(wrapped);
+            }
+        };
+
+        let mut parsed_cells = match CellInfo::parse(&cells_output) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                let wrapped = anyhow!(
+                    "Fail to parse cells at {} (attempt {}/{}): {}",
+                    mount_path.display(),
+                    attempt,
+                    CELLS_CONFIG_ATTEMPTS,
+                    err
+                );
+                if attempt < CELLS_CONFIG_ATTEMPTS {
+                    tracing::warn!("{}; retrying", wrapped);
+                    tokio::time::sleep(Duration::from_millis(PROJECT_ROOT_PROBE_INTERVAL_MS)).await;
+                    last_err = Some(wrapped);
+                    continue;
+                }
+                return Err(wrapped);
+            }
+        };
+
+        tracing::debug!("Get config");
+        match buck2.audit_config() {
+            Ok(cfg) => {
+                parsed_cells.parse_config_data(&cfg)?;
+                cells = Some(parsed_cells);
+                break;
+            }
+            Err(err) => {
+                let wrapped = anyhow!(
+                    "Fail to get config at {} (attempt {}/{}): {}",
+                    mount_path.display(),
+                    attempt,
+                    CELLS_CONFIG_ATTEMPTS,
+                    err
+                );
+                if attempt < CELLS_CONFIG_ATTEMPTS && is_transient_mount_error(&wrapped) {
+                    tracing::warn!("{}; retrying", wrapped);
+                    tokio::time::sleep(Duration::from_millis(PROJECT_ROOT_PROBE_INTERVAL_MS)).await;
+                    last_err = Some(wrapped);
+                    continue;
+                }
+                return Err(wrapped);
+            }
+        }
+    }
+    let cells = cells.ok_or_else(|| {
+        last_err.unwrap_or_else(|| anyhow!("Fail to get cells/config at {}", mount_path.display()))
+    })?;
 
     let base = get_repo_targets("base.jsonl", &old_repo)?;
     let changes = Changes::new(&cells, mega_changes)?;
@@ -512,63 +610,6 @@ async fn flush_buffer(
     }
 }
 
-/// RAII guard for automatically unmounting Antares filesystem when dropped
-struct MountGuard {
-    mount_id: String,
-    task_id: String,
-    unmounted: AtomicBool,
-}
-
-impl MountGuard {
-    fn new(mount_id: String, task_id: String) -> Self {
-        Self {
-            mount_id,
-            task_id,
-            unmounted: AtomicBool::new(false),
-        }
-    }
-
-    async fn unmount(&self) {
-        if self.unmounted.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        match unmount_antares_fs(&self.mount_id).await {
-            Ok(_) => tracing::info!("[Task {}] Filesystem unmounted successfully.", self.task_id),
-            Err(e) => {
-                tracing::error!(
-                    "[Task {}] Failed to unmount filesystem: {}",
-                    self.task_id,
-                    e
-                )
-            }
-        }
-    }
-}
-
-impl Drop for MountGuard {
-    fn drop(&mut self) {
-        if self.unmounted.load(Ordering::Acquire) {
-            return;
-        }
-        if keep_failed_mounts() {
-            tracing::info!(
-                "[Task {}] MountGuard dropped — unmount skipped (ORION_KEEP_FAILED_MOUNTS=1, mount_id={}).",
-                self.task_id,
-                self.mount_id,
-            );
-            return;
-        }
-        let mount_id = self.mount_id.clone();
-        let task_id: String = self.task_id.clone();
-        tokio::spawn(async move {
-            match unmount_antares_fs(&mount_id).await {
-                Ok(_) => tracing::info!("[Task {}] Filesystem unmounted successfully.", task_id),
-                Err(e) => tracing::error!("[Task {}] Failed to unmount filesystem: {}", task_id, e),
-            }
-        });
-    }
-}
-
 /// Executes buck build with filesystem mounting and output streaming.
 ///
 /// Process flow:
@@ -612,8 +653,6 @@ pub async fn build(
     const MAX_TARGETS_ATTEMPTS: usize = 2;
     let mut mount_point = None;
     let mut old_repo_mount_point_saved = None;
-    let mut mount_guard = None;
-    let mut mount_guard_old_repo = None;
     let mut targets: Vec<TargetLabel> = Vec::new();
     let mut last_targets_error: Option<anyhow::Error> = None;
 
@@ -629,13 +668,11 @@ pub async fn build(
         // Buck2 isolates daemons by project root, so distinct mount paths
         // naturally get separate daemons without needing `--isolation-dir`.
         let id_for_old_repo = format!("{id}-old-{attempt}");
-        let (old_repo_mount_point, mount_id_old_repo) =
+        let (old_repo_mount_point, _mount_id_old_repo) =
             mount_antares_fs(&id_for_old_repo, None).await?;
-        let guard_old_repo = MountGuard::new(mount_id_old_repo.clone(), id_for_old_repo);
 
         let id_for_repo = format!("{id}-{attempt}");
-        let (repo_mount_point, mount_id) = mount_antares_fs(&id_for_repo, cl_arg).await?;
-        let guard = MountGuard::new(mount_id.clone(), id_for_repo);
+        let (repo_mount_point, _mount_id) = mount_antares_fs(&id_for_repo, cl_arg).await?;
 
         tracing::info!(
             "[Task {}] Filesystem mounted successfully (attempt {}/{}).",
@@ -644,9 +681,17 @@ pub async fn build(
             MAX_TARGETS_ATTEMPTS
         );
 
-        // Resolve the sub-project paths within each mount for buck2.
         let old_project_root = PathBuf::from(&old_repo_mount_point).join(repo_prefix);
         let new_project_root = PathBuf::from(&repo_mount_point).join(repo_prefix);
+        tracing::info!(
+            "[Task {}] Resolving build targets from project roots (old={}, new={}).",
+            id,
+            old_project_root.display(),
+            new_project_root.display()
+        );
+
+        wait_for_project_root_ready(&id, "old", &old_project_root).await?;
+        wait_for_project_root_ready(&id, "new", &new_project_root).await?;
 
         match get_build_targets(
             old_project_root.to_str().unwrap_or(&old_repo_mount_point),
@@ -658,23 +703,12 @@ pub async fn build(
             Ok(found_targets) => {
                 mount_point = Some(repo_mount_point);
                 old_repo_mount_point_saved = Some(old_repo_mount_point.clone());
-                mount_guard = Some(guard);
-                mount_guard_old_repo = Some(guard_old_repo);
                 targets = found_targets;
                 break;
             }
             Err(e) => {
-                if keep_failed_mounts() {
-                    tracing::info!(
-                        "[Task {}] Keeping failed mounts alive for debugging (ORION_KEEP_FAILED_MOUNTS=1)",
-                        id,
-                    );
-                } else {
-                    guard.unmount().await;
-                    guard_old_repo.unmount().await;
-                }
                 tracing::warn!(
-                    "[Task {}] Failed to get build targets (attempt {}/{}): {}. Mounts kept alive for debugging (old={}, new={}).",
+                    "[Task {}] Failed to get build targets (attempt {}/{}): {}. Mounts retained for debugging (old={}, new={}).",
                     id,
                     attempt,
                     MAX_TARGETS_ATTEMPTS,
@@ -712,9 +746,6 @@ pub async fn build(
             return Err(err.into());
         }
     };
-    let mount_guard = mount_guard.ok_or("Mount guard missing after target discovery")?;
-    let mount_guard_old_repo =
-        mount_guard_old_repo.ok_or("Old repo mount guard missing after target discovery")?;
 
     let build_result = async {
         // Run buck2 build from the sub-project directory, not the monorepo root.
@@ -830,41 +861,14 @@ pub async fn build(
     }
     .await;
 
-    if keep_failed_mounts() {
-        tracing::info!(
-            "[Task {}] Skipping unmount (ORION_KEEP_FAILED_MOUNTS=1) — mount directories retained: \
-             new_repo mountpoint={}, mount_id={}; \
-             old_repo mountpoint={}, mount_id={}",
-            id,
-            mount_point,
-            mount_guard.mount_id,
-            old_repo_mount_point_saved.as_deref().unwrap_or("<unknown>"),
-            mount_guard_old_repo.mount_id,
-        );
-        // Prevent the Drop impl from unmounting.
-        mount_guard.unmounted.store(true, Ordering::Release);
-        mount_guard_old_repo
-            .unmounted
-            .store(true, Ordering::Release);
-    } else {
-        mount_guard.unmount().await;
-        mount_guard_old_repo.unmount().await;
-    }
+    tracing::info!(
+        "[Task {}] Build completed — mount directories retained for debugging: \
+         new_repo mountpoint={}; \
+         old_repo mountpoint={}",
+        id,
+        mount_point,
+        old_repo_mount_point_saved.as_deref().unwrap_or("<unknown>"),
+    );
 
     build_result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_mount_guard_creation() {
-        let mount_guard = MountGuard::new("test_mount_id".to_string(), "test_task_id".to_string());
-        assert_eq!(mount_guard.mount_id, "test_mount_id");
-        assert_eq!(mount_guard.task_id, "test_task_id");
-    }
-
-    // Note: mount/unmount tests removed - they now use scorpiofs direct calls
-    // which require actual filesystem setup. See integration tests instead.
 }

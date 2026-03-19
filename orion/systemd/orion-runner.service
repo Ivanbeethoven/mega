@@ -5,22 +5,26 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=orion
-Group=orion
+User=root
+Group=root
 WorkingDirectory=/home/orion/orion-runner
 
 # Optional runtime config. Create this file on the VM to set SERVER_WS,
 # BUCK_PROJECT_ROOT, ORION_WORKER_ID, etc.
-EnvironmentFile=-/etc/orion/orion-runner.env
+EnvironmentFile=-/home/orion/orion-runner/.env
+Environment=PATH=/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin
 
 # Scorpiofs config path (stable default expected by orion/src/antares.rs)
 Environment=SCORPIO_CONFIG=/home/orion/orion-runner/scorpio.toml
 
 # Cleanup before start: kill old processes and unmount FUSE
 ExecStartPre=/home/orion/orion-runner/cleanup.sh
+ExecStartPre=/bin/mkdir -p /home/orion/orion-runner/log
 
-# Start orion (run.sh loads .env and starts the binary)
-ExecStart=/home/orion/orion-runner/run.sh
+# Start Orion binary directly
+ExecStart=/home/orion/orion-runner/orion
+StandardOutput=append:/home/orion/orion-runner/log/orion.log
+StandardError=append:/home/orion/orion-runner/log/orion.log
 Restart=always
 RestartSec=2
 
@@ -30,7 +34,8 @@ CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
 
 # Basic hardening (relaxed for FUSE operations)
 NoNewPrivileges=false
-PrivateTmp=true
+PrivateTmp=false
+PrivateMounts=no
 
 [Install]
 WantedBy=multi-user.target

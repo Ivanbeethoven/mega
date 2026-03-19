@@ -51,7 +51,6 @@ All files are owned by the `orion` user.
 ├── orion                       # Main executable
 ├── .env                        # Environment variables
 ├── scorpio.toml                # Scorpio config
-├── run.sh                      # Startup script
 └── cleanup.sh                  # Pre-start cleanup script
 
 /data/scorpio/                  # Scorpio data directory
